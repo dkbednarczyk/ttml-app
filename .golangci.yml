@@ -1,0 +1,59 @@
+# golangci-lint v2 config. Version is pinned in tools.mod; run through `just lint`.
+# Proof-of-concept stage: the standard linters plus a few that catch real bugs,
+# and depguard to keep the package layout honest. Tighten this as the code settles.
+version: "2"
+
+run:
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - depguard
+    - errorlint
+    - misspell
+    - nolintlint
+
+  settings:
+    depguard:
+      rules:
+        # AGENTS.md: core/, formats/, audio/ and jobs/ never import Fyne.
+        logic-has-no-ui:
+          list-mode: lax
+          files:
+            - "**/core/**"
+            - "**/formats/**"
+            - "**/audio/**"
+            - "**/jobs/**"
+          deny:
+            - pkg: fyne.io
+              desc: "only ui/ may import Fyne (see AGENTS.md)"
+        # Only ui/ may reach into the UI package.
+        ui-is-a-leaf:
+          list-mode: lax
+          files:
+            - "!**/ui/**"
+            - "!**/cmd/**"
+          deny:
+            - pkg: ttml-app/ui
+              desc: "nothing imports ui/ except cmd/"
+
+    nolintlint:
+      require-specific: true
+
+  exclusions:
+    generated: strict
+    presets:
+      - common-false-positives
+      - std-error-handling
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    gofumpt:
+      module-path: ttml-app
+    goimports:
+      local-prefixes: [ttml-app]
