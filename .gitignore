@@ -6,12 +6,6 @@
 *.out
 coverage.*
 
-# Python worker
-worker/.venv/
-__pycache__/
-.pytest_cache/
-.ruff_cache/
-
 # Editors / OS
 .idea/
 .vscode/

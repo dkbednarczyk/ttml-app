@@ -59,7 +59,8 @@ type mainWindow struct {
 	speedButton  *widget.Button
 	startButton  *widget.Button // back to the beginning
 	statusButton *widget.Button // whether the lyrics would save; click for details
-	speed        float64        // playback speed; the pitch moves with it
+	statusIcons  statusIcons
+	speed        float64 // playback speed; the pitch moves with it
 	player       audioPlayer
 	openAudio    func(path string) (audioPlayer, error)
 }
@@ -135,7 +136,8 @@ func newMainWindow(w fyne.Window) *mainWindow {
 	m.speed = 1
 	m.speedButton = widget.NewButton(formatSpeed(1), m.cycleSpeed)
 	m.startButton = widget.NewButtonWithIcon("", theme.MediaSkipPreviousIcon(), m.skipToStart)
-	m.statusButton = widget.NewButtonWithIcon("", statusOK, m.showStatus)
+	m.statusIcons = newStatusIcons()
+	m.statusButton = widget.NewButtonWithIcon("", m.statusIcons.ok, m.showStatus)
 	m.statusButton.Importance = widget.LowImportance
 	m.statusButton.Hide()
 	m.tapButton.OnTapped = m.tap

@@ -21,24 +21,24 @@ func TestStatusIcon(t *testing.T) {
 	}
 
 	press(fyne.KeyS, time.Second) // an open line: no end time
-	if mw.statusButton.Icon != statusError {
+	if mw.statusButton.Icon != mw.statusIcons.err {
 		t.Fatal("status is not red with a line missing its end")
 	}
 
 	press(fyne.KeyE, 3*time.Second) // timed, but no text: too long to warn about? 2 s is the limit
-	if mw.statusButton.Icon != statusOK {
+	if mw.statusButton.Icon != mw.statusIcons.ok {
 		t.Fatal("status is not green for a timed line (a 2 s break)")
 	}
 
 	press(fyne.KeyS, 5*time.Second)
 	press(fyne.KeyS, 5100*time.Millisecond) // double tap: a 0.1 s line
 	press(fyne.KeyE, 7*time.Second)
-	if mw.statusButton.Icon != statusWarning {
+	if mw.statusButton.Icon != mw.statusIcons.warning {
 		t.Fatal("status is not yellow with a 0.1 s line")
 	}
 
 	mw.undo() // drop the end of line 3: it's open again, an error outranks the warning
-	if mw.statusButton.Icon != statusError {
+	if mw.statusButton.Icon != mw.statusIcons.err {
 		t.Fatal("status is not red when errors and warnings mix")
 	}
 }
@@ -50,13 +50,13 @@ func TestStatusShowsMismatch(t *testing.T) {
 	if err := mw.importTTML(writeTTML(t, doc)); err != nil {
 		t.Fatal(err)
 	}
-	if mw.statusButton.Icon != statusOK {
+	if mw.statusButton.Icon != mw.statusIcons.ok {
 		t.Fatal("status is not green before audio is loaded")
 	}
 	if err := mw.loadAudio(testAudioPath); err != nil { // 2:00 long, but the file says 4:09
 		t.Fatal(err)
 	}
-	if mw.statusButton.Icon != statusWarning {
+	if mw.statusButton.Icon != mw.statusIcons.warning {
 		t.Fatal("status is not yellow when the lyrics are for a longer song")
 	}
 }

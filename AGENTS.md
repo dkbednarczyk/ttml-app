@@ -1,103 +1,53 @@
 # AGENTS.md
 
-Desktop editor for Apple-style TTML lyrics (line, word and syllable timing).
-The full design is in `Build Plan.md`; read the sections your milestone names.
+Desktop editor for Apple-style TTML lyrics. Today it syncs whole lines; word
+and syllable timing are a later goal, and automatic sync (ML) after that.
 
 ## Stack
 
-- **App:** Go (cgo on) + Fyne. One process holds the UI and all logic.
-- **Audio:** decoding and playback through gopxl/beep (oto). The app opens only
-  the formats beep decodes (WAV, MP3, FLAC, Ogg Vorbis); there is no ffmpeg
-  conversion step.
-- **Worker:** Python 3.12 in `worker/`, managed by uv. It only wraps Demucs and
-  lyric-align and prints JSON lines. Keep it under ~300 lines. The manual
-  editor must never need Python.
+- Go (cgo on) + Fyne. One process holds the UI and all logic.
+- Audio: gopxl/beep (oto output). It plays what beep decodes: WAV, MP3, FLAC
+  and Ogg Vorbis, decoded from disk as it plays. Speed (0.5x, 0.75x, 1x) goes
+  through beep's resampler, so the pitch moves with it.
+- Track tags with dhowden/tag, album art with golang.org/x/image, desktop
+  settings (cursor theme) with rymdport/portal.
+- Targets: Linux, native Wayland only (no X11 or XWayland), and macOS. The
+  justfile sets the `wayland` build tag on Linux; for plain `go` commands
+  there, pass `-tags wayland` yourself.
 
-## Setup
+## Setup and commands
 
 ```sh
 just doctor        # what is missing
 just deps-fedora   # Fyne and ALSA C libraries on Fedora/Nobara (sudo)
-just setup         # Go modules, pinned dev tools, worker venv (dev tools only)
-just worker-ml     # optional: torch, Demucs, faster-whisper (several GB; needed from M4)
+just setup         # Go modules and the pinned dev tools
+just run           # launch the app
 ```
 
-Required on PATH: `go` (go.mod pins the toolchain; Go downloads it if yours is
-older), `uv`, `just`, `gcc`, `git`. On Windows use a
-MinGW-w64 gcc (e.g. MSYS2) for cgo, and Git Bash for `just doctor`.
+`just check` must pass before every commit: `go mod tidy -diff` and
+`go mod verify`, golangci-lint (with gofumpt and goimports), `go build ./...`
+and `go test -race -shuffle=on ./...`. `just fmt` formats the code. Dev tools
+live in `tools.mod`, separate from `go.mod`; run them with
+`go tool -modfile=tools.mod <tool>`.
 
-On Linux the app is native Wayland only. X11 (and XWayland) is not supported
-and support is not planned. The justfile always sets the `wayland` build tag on
-Linux; for plain `go` commands outside just, pass `-tags wayland` yourself.
+When unsure of a Fyne (or any) API, read its source in the module cache
+(`go env GOMODCACHE`) rather than guessing.
 
-## Commands
-
-`just check` must pass before every commit. It runs:
-
-| Step | What it runs |
-| --- | --- |
-| `check-deps` | `go mod tidy -diff` (app and tools), `go mod verify`, `uv lock --check` |
-| `lint-go` | golangci-lint: the standard set (errcheck, govet, ineffassign, staticcheck, unused) plus depguard, errorlint, misspell, nolintlint; gofumpt and goimports |
-| `lint-py` | `ruff check` (E, F, W, I, B, UP, SIM, RUF), `ruff format --check`, `pyright` standard mode |
-| `build` | `go build ./...` |
-| `test` | `go test -race -shuffle=on ./...`, `pytest` |
-
-`just fmt` formats Go and Python in place. `just vuln` runs govulncheck.
-Go steps print "skipped" until the first package exists.
-
-## Layout and the dependency rule
+## Layout
 
 ```
-cmd/lyrsync/   headless CLI: import, validate, export, later align
-cmd/<app>/     GUI entry point (name not decided yet); supports --demo <fixture>
-core/          model, commands, undo; the only owner of the Project
-formats/       TXT, LRC, eLRC, SRT, TTML import/export; validator
-audio/         decoded buffers, playback, clock, peaks
-jobs/          worker child processes, cancel, cache
-ui/            Fyne screens; changes the model only through core commands
-worker/        Python worker (own pyproject.toml, uv.lock)
-testdata/      fixtures
+cmd/app/   GUI entry point
+core/      the Project (lines, timing, metadata) and the commands that edit it; undo
+formats/   TTML read/write, plain-text lyrics, validator and warnings, atomic file writes
+audio/     playback, speed, track tags, cover art
+ui/        Fyne screens
+example/   local sample songs (git-ignored; tests that need them skip)
 ```
 
-- `ui/` may import `core/`. `core/`, `formats/`, `audio/` and `jobs/` never
-  import Fyne. Nothing but `cmd/` imports `ui/`. depguard enforces both rules
-  (`.golangci.yml`); do not edit those rules to get a build through.
+## Rules
+
 - The UI never changes the model directly: every edit is a `core` command, so
   undo works everywhere.
-
-## Dependencies
-
-- No new dependency without asking. Versions are exact, everywhere.
-- Approved for the app (add them in M0, at these versions unless asked):
-  `fyne.io/fyne/v2 v2.8.2`, `github.com/gopxl/beep/v2 v2.1.1`,
-  `github.com/dhowden/tag v0.0.0-20240417053706-3d75831295e8` (track tags; the
-  module has no tagged releases), `github.com/rymdport/portal v0.4.2` (desktop
-  settings such as the cursor theme; Fyne already depends on it, keep the
-  versions in step), `golang.org/x/image v0.24.0` (WebP and BMP album art; also
-  pulled in by Fyne, keep in step).
-- Go dev tools live in `tools.mod` (separate from `go.mod` so they never move
-  app dependency versions). Run them with `go tool -modfile=tools.mod <tool>`.
-- Worker: dev tools in the `dev` group, Demucs and lyric-align in the `ml`
-  group of `worker/pyproject.toml`. Change versions there, then `just tidy`.
-- When unsure of a Fyne (or any) API, read its source in the module cache
-  (`go env GOMODCACHE`) before writing code. Do not guess.
-
-## Lint policy
-
-- The Go and Python lint sets are kept light on purpose while the project is a
-  proof of concept; add linters back as the code settles. Do not disable linters or
-  loosen `.golangci.yml`, `[tool.ruff]` or `[tool.pyright]` just to make code
-  pass. Fix the code.
-- A suppression must name the rule and should say why:
-  `//nolint:errcheck // best-effort cleanup`. nolintlint rejects a bare
-  `//nolint`. In Python use
-  `# noqa: RULE` and `# pyright: ignore[rule]`, never a bare `# type: ignore`.
-
-## Runtime rules
-
-- Playback goes through `audio.Player` (beep). Do not hand-write a device callback;
-  if one is ever added, it never allocates, locks or logs.
+- `core/`, `formats/` and `audio/` never import Fyne, and nothing but `cmd/`
+  imports `ui/`. depguard enforces this (`.golangci.yml`).
 - UI changes from other goroutines go through `fyne.Do`.
-- Every file save is atomic: write a temp file in the same directory, then rename.
-- Child processes (the worker) are cancelled by killing the process; a
-  crash in one must never take down the editor.
