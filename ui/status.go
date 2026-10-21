@@ -13,11 +13,19 @@ import (
 	"ttml-app/formats"
 )
 
-var (
-	statusOK      = theme.NewSuccessThemedResource(theme.ConfirmIcon())
-	statusWarning = theme.NewWarningThemedResource(theme.WarningIcon())
-	statusError   = theme.NewErrorThemedResource(theme.CancelIcon())
-)
+// statusIcons are the three faces of the status icon. They are built with the
+// window, not at package init: looking up a theme icon needs a running app.
+type statusIcons struct {
+	ok, warning, err fyne.Resource
+}
+
+func newStatusIcons() statusIcons {
+	return statusIcons{
+		ok:      theme.NewSuccessThemedResource(theme.ConfirmIcon()),
+		warning: theme.NewWarningThemedResource(theme.WarningIcon()),
+		err:     theme.NewErrorThemedResource(theme.CancelIcon()),
+	}
+}
 
 // lyricsStatus is what the status icon reports: problems block a save,
 // warnings don't.
@@ -58,11 +66,11 @@ func (m *mainWindow) updateStatus() {
 	s := m.checkLyrics()
 	switch {
 	case len(s.problems) > 0:
-		m.statusButton.SetIcon(statusError)
+		m.statusButton.SetIcon(m.statusIcons.err)
 	case len(s.warnings) > 0:
-		m.statusButton.SetIcon(statusWarning)
+		m.statusButton.SetIcon(m.statusIcons.warning)
 	default:
-		m.statusButton.SetIcon(statusOK)
+		m.statusButton.SetIcon(m.statusIcons.ok)
 	}
 }
 

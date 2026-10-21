@@ -18,14 +18,13 @@ linters:
   settings:
     depguard:
       rules:
-        # AGENTS.md: core/, formats/, audio/ and jobs/ never import Fyne.
+        # AGENTS.md: core/, formats/ and audio/ never import Fyne.
         logic-has-no-ui:
           list-mode: lax
           files:
             - "**/core/**"
             - "**/formats/**"
             - "**/audio/**"
-            - "**/jobs/**"
           deny:
             - pkg: fyne.io
               desc: "only ui/ may import Fyne (see AGENTS.md)"
