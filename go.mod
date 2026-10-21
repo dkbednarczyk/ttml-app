@@ -9,7 +9,7 @@ require (
 	github.com/dhowden/tag v0.0.0-20240417053706-3d75831295e8
 	github.com/gopxl/beep/v2 v2.1.1
 	github.com/rymdport/portal v0.4.2
-	golang.org/x/image v0.24.0
+	golang.org/x/image v0.41.0
 )
 
 require (
