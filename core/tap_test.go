@@ -31,8 +31,8 @@ func TestTapsMarkLineBoundaries(t *testing.T) {
 			t.Errorf("line %d end = %v, want %d", i, got, w.end)
 		}
 	}
-	if got := h.Project().OpenLine(); got != 2 {
-		t.Errorf("OpenLine() = %d, want 2", got)
+	if got := h.Project().OpenLineAt(5000); got != 2 {
+		t.Errorf("OpenLineAt(5000) = %d, want 2", got)
 	}
 }
 
@@ -43,8 +43,11 @@ func TestTapRejectsTimesBeforePreviousBoundary(t *testing.T) {
 	if _, err := NewTap(h.Project(), 1000); !errors.Is(err, ErrBeforePrevious) {
 		t.Errorf("NewTap at the open line's start: error = %v, want %v", err, ErrBeforePrevious)
 	}
-	if _, err := NewEndLine(h.Project(), 500); !errors.Is(err, ErrBeforePrevious) {
-		t.Errorf("NewEndLine before the start: error = %v, want %v", err, ErrBeforePrevious)
+	if _, err := NewEndLine(h.Project(), 1000); !errors.Is(err, ErrBeforePrevious) {
+		t.Errorf("NewEndLine at the start: error = %v, want %v", err, ErrBeforePrevious)
+	}
+	if _, err := NewEndLine(h.Project(), 500); !errors.Is(err, ErrNoOpenLine) {
+		t.Errorf("NewEndLine before any line starts: error = %v, want %v", err, ErrNoOpenLine)
 	}
 
 	apply(t, &h, endAt(&h, 2000))
@@ -128,8 +131,8 @@ func TestDeletingOpenLineClosesNothing(t *testing.T) {
 	apply(t, &h, tapAt(&h, 2000))
 
 	apply(t, &h, func() (Command, error) { return NewDeleteLine(h.Project(), 1) })
-	if got := h.Project().OpenLine(); got != -1 {
-		t.Fatalf("OpenLine() = %d after deleting the open line, want -1", got)
+	if got := h.Project().OpenLineAt(3000); got != -1 {
+		t.Fatalf("OpenLineAt(3000) = %d after deleting the open line, want -1", got)
 	}
 	if end := h.Project().Lines[0].End; end == nil || *end != 2000 {
 		t.Fatalf("first line end = %v after deleting the next line, want 2000", end)

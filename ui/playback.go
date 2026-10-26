@@ -56,6 +56,7 @@ func (m *mainWindow) sliderChanged(value float64) {
 	}
 	m.updateTimeLabel()
 	m.updatePreview(true)
+	m.updateMarks()
 	if m.position >= m.duration {
 		m.pause()
 	}
@@ -67,6 +68,7 @@ func (m *mainWindow) setUIPosition(position time.Duration) {
 	m.slider.Refresh()
 	m.updateTimeLabel()
 	m.updatePreview(true)
+	m.updateMarks()
 }
 
 // skipToStart goes back to the beginning of the song, playing or paused as it was.
@@ -114,7 +116,7 @@ func (m *mainWindow) seekTo(at core.Ms) {
 
 // updatePreview shows the playback position in the Preview tab.
 func (m *mainWindow) updatePreview(animate bool) {
-	m.preview.show(m.history.Project().Lines, core.Ms(m.position.Milliseconds()), animate)
+	m.preview.show(m.history.Project(), core.Ms(m.position.Milliseconds()), animate)
 }
 
 func (m *mainWindow) clampPosition(position time.Duration) time.Duration {
@@ -167,7 +169,7 @@ func (m *mainWindow) play() error {
 	m.playing = true
 	m.playButton.SetText("Pause")
 	m.playButton.SetIcon(theme.MediaPauseIcon())
-	m.updateButtons()
+	m.updateMarks()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.clockCancel = cancel
@@ -195,7 +197,7 @@ func (m *mainWindow) pause() {
 	m.playing = false
 	m.playButton.SetText("Play")
 	m.playButton.SetIcon(theme.MediaPlayIcon())
-	m.updateButtons()
+	m.updateMarks()
 }
 
 func (m *mainWindow) close() {

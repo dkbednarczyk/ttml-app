@@ -78,8 +78,8 @@ func TestTapAfterUntimedLines(t *testing.T) {
 	apply(t, &h, tapAt(&h, 1000))
 	// An untimed line below the open line doesn't stop S from ending it.
 	apply(t, &h, func() (Command, error) { return NewInsertLine(h.Project(), 1) })
-	if got := h.Project().OpenLine(); got != 0 {
-		t.Fatalf("OpenLine() = %d with an untimed line after the open one, want 0", got)
+	if got := h.Project().OpenLineAt(1500); got != 0 {
+		t.Fatalf("OpenLineAt(1500) = %d with an untimed line after the open one, want 0", got)
 	}
 
 	// The untimed line is waiting to be tapped: the tap starts it.
@@ -102,8 +102,8 @@ func TestTapThroughPastedLines(t *testing.T) {
 	var h History
 	pasted := []Line{{Text: "one"}, {Text: "two"}, {Text: "three"}}
 	apply(t, &h, func() (Command, error) { return NewInsertLines(h.Project(), 0, pasted) })
-	if got := h.Project().NextLine(); got != 0 {
-		t.Fatalf("NextLine() = %d with only pasted lines, want 0", got)
+	if got := h.Project().NextLineAt(0); got != 0 {
+		t.Fatalf("NextLineAt(0) = %d with only pasted lines, want 0", got)
 	}
 
 	apply(t, &h, tapAt(&h, 1000))
@@ -134,7 +134,7 @@ func TestTapThroughPastedLines(t *testing.T) {
 	for range 5 {
 		h.Undo()
 	}
-	if got := h.Project(); len(got.Lines) != 3 || got.Lines[0].Begin != nil || got.NextLine() != 0 {
+	if got := h.Project(); len(got.Lines) != 3 || got.Lines[0].Begin != nil || got.NextLineAt(0) != 0 {
 		t.Fatalf("after undoing the taps: %+v", got.Lines)
 	}
 	h.Undo()
@@ -143,15 +143,36 @@ func TestTapThroughPastedLines(t *testing.T) {
 	}
 }
 
-func TestNextLineSkipsPartlyTimedAndEarlierLines(t *testing.T) {
-	end := Ms(9000)
+func TestNextLineFollowsThePlayhead(t *testing.T) {
+	// Starts at 1, (cleared), 3, (end only, 5) and (pasted) seconds.
 	p := Project{Lines: []Line{
-		{Text: "untimed, but before the last started line"},
-		{Text: "started", Timing: Timing{Begin: new(Ms(1000))}},
-		{Text: "end only", Timing: Timing{End: &end}},
-		{Text: "waiting"},
+		{Text: "one", Timing: Timing{Begin: new(Ms(1000)), End: new(Ms(2000))}},
+		{Text: "cleared"},
+		{Text: "three", Timing: Timing{Begin: new(Ms(3000))}},
+		{Text: "end only", Timing: Timing{End: new(Ms(5000))}},
+		{Text: "pasted"},
 	}}
-	if got := p.NextLine(); got != 3 {
-		t.Fatalf("NextLine() = %d, want 3", got)
+	tests := []struct {
+		at   Ms
+		want int
+	}{
+		{500, -1}, // before every line's place
+		{1000, 1}, // the cleared line's place starts with line 1
+		{2999, 1}, // and ends with line 3's start
+		{3000, 3}, // from line 3 on, the end-only line comes first
+		{4999, 3}, // until its end
+		{5000, 4}, // then the pasted line
+		{9000, 4},
+	}
+	for _, tt := range tests {
+		if got := p.NextLineAt(tt.at); got != tt.want {
+			t.Errorf("NextLineAt(%d) = %d, want %d", tt.at, got, tt.want)
+		}
+	}
+	if got := p.OpenLineAt(3500); got != 2 {
+		t.Errorf("OpenLineAt(3500) = %d, want 2, the line started before it with no end", got)
+	}
+	if got := p.OpenLineAt(1500); got != -1 {
+		t.Errorf("OpenLineAt(1500) = %d, want -1: line 1 has an end", got)
 	}
 }

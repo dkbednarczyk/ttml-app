@@ -137,3 +137,17 @@ func TestPasteDialog(t *testing.T) {
 		t.Fatal("the paste box does not have focus")
 	}
 }
+
+func TestPasteSplitsBackgroundVocals(t *testing.T) {
+	mw := newTestMainWindow(t)
+	mw.pasteLyrics("I can't let this go (let it burn)\nBURN IT DOWN\n")
+
+	first, second := mw.lyricRows.Objects[0].(*lyricRow), mw.lyricRows.Objects[1].(*lyricRow)
+	if first.text.Text != "I can't let this go" || first.bgText.Text != "(let it burn)" || !first.bgRow.Visible() {
+		t.Errorf("line 1 = %q with background %q (shown %v), want the parentheses as its background vocal",
+			first.text.Text, first.bgText.Text, first.bgRow.Visible())
+	}
+	if second.bgRow.Visible() {
+		t.Error("line 2 shows a background vocal box it doesn't have")
+	}
+}

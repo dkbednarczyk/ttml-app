@@ -107,11 +107,140 @@ func TestSetTimeChangesOnlyThatBoundary(t *testing.T) {
 		t.Fatalf("NewSetTime() on the open end error: %v", err)
 	}
 	h.Apply(c)
-	if h.Project().OpenLine() != -1 {
+	if h.Project().OpenLineAt(3500) != -1 {
 		t.Fatal("line is still open after setting its end")
 	}
 	h.Undo()
-	if h.Project().OpenLine() != 1 {
+	if h.Project().OpenLineAt(3500) != 1 {
 		t.Fatal("undo did not reopen the line")
+	}
+}
+
+func TestClearTime(t *testing.T) {
+	var h History
+	apply(t, &h, tapAt(&h, 1000))
+	apply(t, &h, tapAt(&h, 2000))
+	apply(t, &h, endAt(&h, 3000))
+
+	// Line 1's end and line 2's start are one tap, so both are cleared.
+	apply(t, &h, func() (Command, error) { return NewClearTime(h.Project(), 0, End) })
+	p := h.Project()
+	if p.Lines[0].End != nil || p.Lines[1].Begin != nil || *p.Lines[0].Begin != 1000 || *p.Lines[1].End != 3000 {
+		t.Fatalf("after clearing line 1's end: %+v; want it and line 2's start unset, the rest kept", p.Lines)
+	}
+	if p.OpenLineAt(1500) != 0 || p.NextLineAt(1500) != 1 {
+		t.Fatalf("open line %d, next line %d at 1.5 s; want line 1 open and line 2 next",
+			p.OpenLineAt(1500), p.NextLineAt(1500))
+	}
+	apply(t, &h, tapAt(&h, 1800))
+	if p := h.Project(); *p.Lines[0].End != 1800 || *p.Lines[1].Begin != 1800 {
+		t.Fatalf("retap: line 1 ends %v, line 2 starts %v; want 1800 for both", p.Lines[0].End, p.Lines[1].Begin)
+	}
+	h.Undo()
+	h.Undo()
+	if p := h.Project(); *p.Lines[0].End != 2000 || *p.Lines[1].Begin != 2000 {
+		t.Fatalf("undo: line 1 ends %v, line 2 starts %v; want 2000 for both", p.Lines[0].End, p.Lines[1].Begin)
+	}
+
+	// Clearing the last line's end opens it again for the next tap.
+	apply(t, &h, func() (Command, error) { return NewClearTime(h.Project(), 1, End) })
+	if got := h.Project().OpenLineAt(3500); got != 1 {
+		t.Fatalf("OpenLineAt(3500) after clearing the last end = %d, want 1", got)
+	}
+
+	if _, err := NewClearTime(h.Project(), 2, Begin); !errors.Is(err, errNoSuchLine) {
+		t.Errorf("NewClearTime past the last line: error = %v, want %v", err, errNoSuchLine)
+	}
+}
+
+func TestClearStartKeepsAnEndedBreak(t *testing.T) {
+	// Line 1 was ended with E before a break, so its end isn't line 2's start.
+	var h History
+	apply(t, &h, tapAt(&h, 1000))
+	apply(t, &h, endAt(&h, 1500))
+	apply(t, &h, tapAt(&h, 3000))
+
+	apply(t, &h, func() (Command, error) { return NewClearTime(h.Project(), 1, Begin) })
+	if end := h.Project().Lines[0].End; end == nil || *end != 1500 {
+		t.Fatalf("line 1 end = %v, want it kept at 1500", end)
+	}
+}
+
+func TestRetapOneLineInTheMiddle(t *testing.T) {
+	// Four lines tapped at 1, 2, 3 and 4 s, ended at 5 s; line 2 went wrong.
+	var h History
+	for _, at := range []Ms{1000, 2000, 3000, 4000} {
+		apply(t, &h, tapAt(&h, at))
+	}
+	apply(t, &h, endAt(&h, 5000))
+	apply(t, &h, func() (Command, error) { return NewClearTime(h.Project(), 1, Begin) })
+	apply(t, &h, func() (Command, error) { return NewClearTime(h.Project(), 1, End) })
+
+	// Back in line 2's place, S starts it again and then line 3.
+	apply(t, &h, tapAt(&h, 2200))
+	apply(t, &h, tapAt(&h, 3300))
+	want := []struct{ begin, end Ms }{{1000, 2200}, {2200, 3300}, {3300, 4000}, {4000, 5000}}
+	for i, w := range want {
+		if line := h.Project().Lines[i]; line.Begin == nil || line.End == nil || *line.Begin != w.begin || *line.End != w.end {
+			t.Errorf("line %d = %v–%v, want %d–%d", i+1, line.Begin, line.End, w.begin, w.end)
+		}
+	}
+
+	// With nothing left to re-tap there, a tap mid-song does nothing.
+	if _, err := NewTap(h.Project(), 3500); !errors.Is(err, ErrBeforePrevious) {
+		t.Errorf("tap with no line waiting at 3.5 s: error = %v, want %v", err, ErrBeforePrevious)
+	}
+}
+
+func TestClearTimesFromRetaps(t *testing.T) {
+	// Lines at 1–2, 2–3 and 3–4 s; the third has a background vocal running late.
+	var h History
+	for _, at := range []Ms{1000, 2000, 3000} {
+		apply(t, &h, tapAt(&h, at))
+	}
+	apply(t, &h, endAt(&h, 4000))
+	apply(t, &h, func() (Command, error) { return NewSetBackground(h.Project(), 2, "ooh") })
+	apply(t, &h, func() (Command, error) { return NewSetBackgroundTime(h.Project(), 2, End, new(Ms(4500)), 0) })
+
+	apply(t, &h, func() (Command, error) { return NewClearTimesFrom(h.Project(), 1) })
+	p := h.Project()
+	for i := 1; i < 3; i++ {
+		if line := p.Lines[i]; line.Timing != (Timing{}) || line.BackgroundTiming != (Timing{}) {
+			t.Errorf("line %d after clearing: timing %v, background %v; want both unset", i+1, line.Timing, line.BackgroundTiming)
+		}
+	}
+	// Line 1 ended with the tap that started line 2, so it opens again.
+	if p.Lines[0].End != nil || p.OpenLineAt(2500) != 0 || p.NextLineAt(2500) != 1 {
+		t.Fatalf("line 1 end %v, open line %d, next line %d; want line 1 open and line 2 next",
+			p.Lines[0].End, p.OpenLineAt(2500), p.NextLineAt(2500))
+	}
+
+	apply(t, &h, tapAt(&h, 2100))
+	if p := h.Project(); *p.Lines[0].End != 2100 || *p.Lines[1].Begin != 2100 {
+		t.Fatalf("retap: line 1 ends %v, line 2 starts %v; want 2100 for both", p.Lines[0].End, p.Lines[1].Begin)
+	}
+
+	h.Undo()
+	h.Undo()
+	p = h.Project()
+	if *p.Lines[0].End != 2000 || *p.Lines[1].Begin != 2000 || *p.Lines[2].End != 4000 || *p.Lines[2].BackgroundTiming.End != 4500 {
+		t.Fatalf("undo: lines %v; want the times from before clearing", p.Lines)
+	}
+}
+
+func TestClearTimesFromKeepsAnEndedBreak(t *testing.T) {
+	// Line 1 was ended with E before a break, so its end isn't line 2's start.
+	var h History
+	apply(t, &h, tapAt(&h, 1000))
+	apply(t, &h, endAt(&h, 1500))
+	apply(t, &h, tapAt(&h, 3000))
+
+	apply(t, &h, func() (Command, error) { return NewClearTimesFrom(h.Project(), 1) })
+	p := h.Project()
+	if end := p.Lines[0].End; end == nil || *end != 1500 {
+		t.Fatalf("line 1 end = %v, want it kept at 1500", end)
+	}
+	if p.OpenLineAt(2000) != -1 || p.NextLineAt(2000) != 1 {
+		t.Fatalf("open line %d, next line %d; want none open and line 2 next", p.OpenLineAt(2000), p.NextLineAt(2000))
 	}
 }

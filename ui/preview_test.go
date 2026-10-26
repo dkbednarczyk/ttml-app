@@ -43,7 +43,7 @@ func newPreviewTestWindow(t *testing.T) *mainWindow {
 func litLines(mw *mainWindow) []int {
 	var lit []int
 	for i, o := range mw.preview.lines.Objects {
-		if o.(*previewLine).Importance != widget.LowImportance {
+		if o.(*previewLine).main.Importance != widget.LowImportance {
 			lit = append(lit, i+1)
 		}
 	}
@@ -54,7 +54,7 @@ func litLines(mw *mainWindow) []int {
 func TestPreview(t *testing.T) {
 	mw := newPreviewTestWindow(t)
 	labels := mw.preview.lines.Objects
-	if got := labels[0].(*previewLine).Text; got != breakText {
+	if got := labels[0].(*previewLine).main.Text; got != breakText {
 		t.Fatalf("break line shows %q, want %q", got, breakText)
 	}
 
@@ -105,7 +105,7 @@ func TestPreviewSizesDoNotChange(t *testing.T) {
 func TestPreviewFollowsEdits(t *testing.T) {
 	mw := newPreviewTestWindow(t)
 	mw.lyricRows.Objects[1].(*lyricRow).text.SetText("two, edited")
-	if got := mw.preview.lines.Objects[1].(*previewLine).Text; got != "two, edited" {
+	if got := mw.preview.lines.Objects[1].(*previewLine).main.Text; got != "two, edited" {
 		t.Fatalf("preview shows %q after an edit", got)
 	}
 	mw.deleteLine(0)

@@ -21,6 +21,7 @@ const (
 	// amllNS is AMLL's metadata namespace, copied from files in the AMLL TTML
 	// database (github.com/amll-dev/amll-ttml-db). It is a placeholder URL, used as is.
 	amllNS = "http://www.example.com/ns/amll"
+	xmlNS  = "http://www.w3.org/XML/1998/namespace"
 )
 
 var (
@@ -41,10 +42,13 @@ type Imported struct {
 }
 
 // ReadTTML reads the lines of a TTML file: each <p> becomes a line with its
-// begin and end and its text. AMLL metadata (amll:meta) and the stated song
-// length (body dur) are kept. Word timing, background vocals, translations,
-// several singers and song parts are not supported yet; they are left out
-// and named in Dropped. A p without begin or end gets an unset time.
+// begin and end, its text, its singer (ttm:agent) and its background vocal
+// (x-bg spans, with their own times where those differ from the line's).
+// Person agents become the singers, in the order the head declares them, and
+// group agents sing for everyone. AMLL metadata (amll:meta) and the stated
+// song length (body dur) are kept. Word timing, translations and song parts
+// are not supported yet; they are left out and named in Dropped. A p without
+// begin or end gets an unset time.
 //
 // AMLL writes <div xmlns="">, which takes the lines out of the TTML
 // namespace, so inside <tt> elements with no namespace count as TTML too.
@@ -58,8 +62,12 @@ func ReadTTML(r io.Reader) (*Imported, error) {
 		skip     int // depth inside an element whose content is left out
 		text     strings.Builder
 		line     core.Line
-		agents   = map[string]bool{}
 		lineNode int // count of <p> elements, for error messages
+		agents   agentList
+		agent    *agentDecl // the ttm:agent being read, if any
+		inName   bool       // inside its ttm:name
+		bg       bgVocal    // the background vocal of the line being read
+		bgDepth  int        // depth inside an x-bg span
 	)
 	for {
 		tok, err := d.Token()
@@ -85,6 +93,16 @@ func ReadTTML(r io.Reader) (*Imported, error) {
 
 				continue
 			}
+			if t.Name.Space == ttmlMetaNS && t.Name.Local == "agent" && !inP {
+				agent = agents.declare(attr(t, xmlNS, "id"), attr(t, "", "type"))
+
+				continue
+			}
+			if t.Name.Space == ttmlMetaNS && t.Name.Local == "name" && agent != nil {
+				inName = true
+
+				continue
+			}
 			if t.Name.Space == amllNS && t.Name.Local == "meta" {
 				if key := attr(t, "", "key"); key != "" {
 					result.Project.Meta = append(result.Project.Meta, core.MetaEntry{Key: key, Value: attr(t, "", "value")})
@@ -104,6 +122,7 @@ func ReadTTML(r io.Reader) (*Imported, error) {
 				lineNode++
 				inP = true
 				text.Reset()
+				bg = bgVocal{}
 				line = core.Line{}
 				if line.Begin, err = timeAttr(t, "begin", lineNode); err != nil {
 					return nil, err
@@ -111,19 +130,33 @@ func ReadTTML(r io.Reader) (*Imported, error) {
 				if line.End, err = timeAttr(t, "end", lineNode); err != nil {
 					return nil, err
 				}
-				if agent := attr(t, ttmlMetaNS, "agent"); agent != "" {
-					agents[agent] = true
-				}
+				agents.lines = append(agents.lines, attr(t, ttmlMetaNS, "agent"))
 
 				continue
 			}
 			if !inP {
 				continue
 			}
-			switch role := attr(t, ttmlMetaNS, "role"); role {
+			role := attr(t, ttmlMetaNS, "role")
+			if bgDepth > 0 && role == "" {
+				bgDepth++
+				if err := bg.add(t, lineNode); err != nil {
+					return nil, err
+				}
+
+				continue
+			}
+			switch role {
 			case "x-bg":
-				dropped["background vocals"] = true
-				skip = 1
+				if bgDepth > 0 {
+					bgDepth++ // an x-bg inside another counts as part of it
+				} else {
+					bgDepth = 1
+					bg.text.WriteByte(' ') // between this and an earlier x-bg span
+				}
+				if err := bg.add(t, lineNode); err != nil {
+					return nil, err
+				}
 			case "x-translation":
 				dropped["translations"] = true
 				skip = 1
@@ -142,22 +175,38 @@ func ReadTTML(r io.Reader) (*Imported, error) {
 			switch {
 			case skip > 0:
 				skip--
+			case bgDepth > 0:
+				bgDepth--
 			case inP && isTTML(t.Name, "p"):
 				inP = false
 				line.Text = strings.Join(strings.Fields(text.String()), " ")
+				if bg.wordTimed() {
+					dropped["word timing"] = true
+				}
+				bg.setOn(&line)
 				result.Project.Lines = append(result.Project.Lines, line)
+			case agent != nil && t.Name.Space == ttmlMetaNS && t.Name.Local == "name":
+				inName = false
+			case agent != nil && t.Name.Space == ttmlMetaNS && t.Name.Local == "agent":
+				agent = nil
 			}
 		case xml.CharData:
-			if inP && skip == 0 {
+			switch {
+			case skip > 0:
+			case bgDepth > 0:
+				bg.text.Write(t)
+			case inP:
 				text.Write(t)
+			case inName:
+				agent.name += string(t)
 			}
 		}
 	}
 	if !sawTT {
 		return nil, ErrNotTTML
 	}
-	if len(agents) > 1 {
-		dropped["separate singers"] = true
+	if agents.assign(&result.Project) {
+		dropped["several groups of singers"] = true
 	}
 
 	for kind := range dropped {
@@ -239,4 +288,123 @@ func orZero(digits string) string {
 
 func msFrom(seconds float64) core.Ms {
 	return core.Ms(math.Round(seconds * 1000))
+}
+
+// agentDecl is a ttm:agent from the head.
+type agentDecl struct {
+	id, name string
+	group    bool
+}
+
+// agentList collects the agents a file declares and the agent of each line,
+// to turn into singers once the whole file is read.
+type agentList struct {
+	declared []*agentDecl
+	lines    []string // each line's ttm:agent, "" for none
+}
+
+func (a *agentList) declare(id, kind string) *agentDecl {
+	d := &agentDecl{id: id, group: kind == "group"}
+	a.declared = append(a.declared, d)
+
+	return d
+}
+
+// assign sets the project's singers and each line's singer: person agents in
+// the order declared, then agents lines name without declaring them; a line
+// with no agent is the first singer's. Group agents become Everyone. It
+// reports whether lines used more than one group, which the editor can't
+// tell apart.
+func (a *agentList) assign(p *core.Project) (severalGroups bool) {
+	var persons []*agentDecl
+	byID := map[string]*agentDecl{}
+	for _, d := range a.declared {
+		if _, dup := byID[d.id]; dup {
+			continue
+		}
+		byID[d.id] = d
+		if !d.group {
+			persons = append(persons, d)
+		}
+	}
+	for _, id := range a.lines {
+		if _, ok := byID[id]; !ok && id != "" {
+			byID[id] = &agentDecl{id: id}
+			persons = append(persons, byID[id])
+		}
+	}
+
+	groups := map[string]bool{}
+	for i, id := range a.lines {
+		switch d := byID[id]; {
+		case d == nil:
+			p.Lines[i].Singer = 0
+		case d.group:
+			p.Lines[i].Singer = core.Everyone
+			groups[id] = true
+		default:
+			p.Lines[i].Singer = slices.Index(persons, d)
+		}
+	}
+
+	// One unnamed singer is what a project has with no singers listed.
+	if len(persons) > 1 || len(persons) == 1 && persons[0].name != "" {
+		for _, d := range persons {
+			p.Singers = append(p.Singers, core.Singer{Name: strings.Join(strings.Fields(d.name), " ")})
+		}
+	}
+
+	return len(groups) > 1
+}
+
+// bgVocal collects a line's x-bg spans: their text, and the earliest start
+// and latest end among them and the timed spans inside them.
+type bgVocal struct {
+	text       strings.Builder
+	begin, end *core.Ms
+	timed      int // timed spans inside x-bg spans, one per word or syllable
+}
+
+// add takes the times of an x-bg span or an element inside one.
+func (v *bgVocal) add(e xml.StartElement, lineNode int) error {
+	begin, err := timeAttr(e, "begin", lineNode)
+	if err != nil {
+		return err
+	}
+	end, err := timeAttr(e, "end", lineNode)
+	if err != nil {
+		return err
+	}
+	if begin != nil && attr(e, ttmlMetaNS, "role") == "" {
+		v.timed++
+	}
+	if begin != nil && (v.begin == nil || *begin < *v.begin) {
+		v.begin = begin
+	}
+	if end != nil && (v.end == nil || *end > *v.end) {
+		v.end = end
+	}
+
+	return nil
+}
+
+// wordTimed reports whether the background vocal was timed word by word,
+// which the editor can't hold yet.
+func (v *bgVocal) wordTimed() bool {
+	return v.timed > 1
+}
+
+// setOn gives line the background vocal, with its own times only where they
+// differ from the line's.
+func (v *bgVocal) setOn(line *core.Line) {
+	line.Background = strings.Join(strings.Fields(v.text.String()), " ")
+	if line.Background == "" {
+		return
+	}
+	if v.begin != nil && (line.Begin == nil || *v.begin != *line.Begin) {
+		line.BackgroundTiming.Begin = v.begin
+	}
+	if v.end != nil && (line.End == nil || *v.end != *line.End) {
+		line.BackgroundTiming.End = v.end
+	}
 }

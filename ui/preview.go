@@ -49,9 +49,13 @@ func newPreview(seek func(core.Ms)) *preview {
 	return p
 }
 
-// show brings the view in line with the lines and the playback position.
-// With animate false (the tab just opened, say) it moves straight there.
-func (p *preview) show(lines []core.Line, at core.Ms, animate bool) {
+// show brings the view in line with the project's lines and the playback
+// position. With animate false (the tab just opened, say) it moves straight
+// there. With several singers, as in a music app, the second singer's lines
+// (and the fourth's, and so on) sit on the right.
+func (p *preview) show(project *core.Project, at core.Ms, animate bool) {
+	lines := project.Lines
+	duet := project.HasSingers()
 	for i := len(p.lines.Objects); i < len(lines); i++ {
 		p.lines.Add(newPreviewLine(p.seek))
 	}
@@ -65,28 +69,33 @@ func (p *preview) show(lines []core.Line, at core.Ms, animate bool) {
 		label := p.lines.Objects[i].(*previewLine)
 		label.begin = line.Begin
 		text := line.Text
-		if text == "" {
+		if text == "" && line.Background == "" {
 			text = breakText
 		}
 		importance := widget.LowImportance
 		if line.Begin != nil && *line.Begin <= at {
 			top, before = i, top // starts are in order, so the last one started wins
-			if playing(line, at) {
+			if playing(line.Timing, at) {
 				importance = widget.MediumImportance
 			}
 		}
-		if label.Text != text || label.Importance != importance {
-			label.Text = text
-			label.Importance = importance
-			label.Refresh()
+		align := fyne.TextAlignLeading
+		if duet && line.Singer%2 == 1 {
+			align = fyne.TextAlignTrailing
 		}
+		bgImportance := widget.LowImportance
+		if playing(line.BackgroundTimes(), at) {
+			bgImportance = widget.MediumImportance
+		}
+		label.set(label.main, text, importance, align)
+		label.set(label.bg, line.Background, bgImportance, align)
 	}
 
 	if height := p.scroll.Size().Height; p.spacer.MinSize().Height != height {
 		p.spacer.SetMinSize(fyne.NewSize(0, height))
 		p.scroll.Refresh()
 	}
-	if before >= 0 && playing(lines[before], at) {
+	if before >= 0 && playing(lines[before].Timing, at) {
 		top = before
 	}
 	if top != p.current || !animate {
@@ -95,8 +104,8 @@ func (p *preview) show(lines []core.Line, at core.Ms, animate bool) {
 	}
 }
 
-func playing(line core.Line, at core.Ms) bool {
-	return line.Begin != nil && line.End != nil && *line.Begin <= at && at < *line.End
+func playing(t core.Timing, at core.Ms) bool {
+	return t.Begin != nil && t.End != nil && *t.Begin <= at && at < *t.End
 }
 
 // scrollTo puts line i at the top of the view (the very top for -1).
@@ -127,22 +136,47 @@ func (p *preview) scrollTo(i int, animate bool) {
 	p.anim.Start()
 }
 
-// previewLine is one line of the preview. Clicking it skips the song to the
-// line's start; an untimed line has nowhere to go and ignores clicks.
+// previewLine is one line of the preview, with its background vocal in
+// smaller type under it. Clicking it skips the song to the line's start; an
+// untimed line has nowhere to go and ignores clicks.
 type previewLine struct {
-	widget.Label
-	begin *core.Ms
-	seek  func(core.Ms)
+	widget.BaseWidget
+	main, bg *widget.Label
+	begin    *core.Ms
+	seek     func(core.Ms)
 }
 
 func newPreviewLine(seek func(core.Ms)) *previewLine {
-	l := &previewLine{seek: seek}
+	l := &previewLine{seek: seek, main: widget.NewLabel(""), bg: widget.NewLabel("")}
 	l.ExtendBaseWidget(l)
-	l.SizeName = theme.SizeNameHeadingText
-	l.TextStyle = fyne.TextStyle{Bold: true}
-	l.Wrapping = fyne.TextWrapWord
+	l.main.SizeName = theme.SizeNameHeadingText
+	l.main.TextStyle = fyne.TextStyle{Bold: true}
+	l.main.Wrapping = fyne.TextWrapWord
+	l.bg.SizeName = theme.SizeNameSubHeadingText
+	l.bg.Wrapping = fyne.TextWrapWord
+	l.bg.Hide()
 
 	return l
+}
+
+func (l *previewLine) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(container.NewVBox(l.main, l.bg))
+}
+
+// set shows text in one of the line's labels, which is hidden while empty.
+func (*previewLine) set(label *widget.Label, text string, importance widget.Importance, align fyne.TextAlign) {
+	if label.Text == text && label.Importance == importance && label.Alignment == align {
+		return
+	}
+	label.Text = text
+	label.Importance = importance
+	label.Alignment = align
+	label.Refresh()
+	if text == "" {
+		label.Hide()
+	} else {
+		label.Show()
+	}
 }
 
 func (l *previewLine) Tapped(*fyne.PointEvent) {

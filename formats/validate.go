@@ -70,6 +70,21 @@ func Validate(p *core.Project, songEnd core.Ms) []Problem {
 		if songEnd > 0 && line.End != nil && *line.End > songEnd {
 			add(i, "ends after the song (%s)", songEnd)
 		}
+		if strings.TrimSpace(line.Background) == "" {
+			continue
+		}
+		// With no times of its own the background vocal has the line's, and
+		// the checks above cover them.
+		own, bg := line.BackgroundTiming, line.BackgroundTimes()
+		switch {
+		case own.Begin == nil && own.End == nil:
+		case bg.Begin == nil || bg.End == nil:
+			add(i, "the background vocal has a time but the line has none to go with it")
+		case *bg.End <= *bg.Begin:
+			add(i, "the background vocal ends at or before its start")
+		case songEnd > 0 && own.End != nil && *own.End > songEnd:
+			add(i, "the background vocal ends after the song (%s)", songEnd)
+		}
 	}
 
 	return problems
@@ -95,8 +110,15 @@ func Warnings(p *core.Project) []Problem {
 		switch {
 		case length < shortLine:
 			warnings = append(warnings, Problem{Line: i + 1, Reason: fmt.Sprintf("only %d ms long; a double tap?", length)})
-		case strings.TrimSpace(line.Text) == "" && length < shortBreak:
+		case strings.TrimSpace(line.Text) == "" && line.Background == "" && length < shortBreak:
 			warnings = append(warnings, Problem{Line: i + 1, Reason: "no text, but too short for a break; a missing lyric?"})
+		}
+		if bg := line.BackgroundTimes(); line.Background != "" && bg.Begin != nil && bg.End != nil &&
+			(*bg.Begin < *line.Begin || *bg.End > *line.End) {
+			warnings = append(warnings, Problem{
+				Line:   i + 1,
+				Reason: "the background vocal runs outside the line's times; some players cut it off there",
+			})
 		}
 	}
 

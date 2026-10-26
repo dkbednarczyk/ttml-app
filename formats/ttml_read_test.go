@@ -82,10 +82,114 @@ func TestReadTTMLWordTimed(t *testing.T) {
 		line("Hello wonder", 12_340, 15_900),
 		line("Second singer", 76_000, 80_000),
 	})
-	want := []string{"background vocals", "separate singers", "song parts", "translations", "word timing"}
+	want := []string{"song parts", "translations", "word timing"}
 	if !slices.Equal(got.Dropped, want) {
 		t.Errorf("Dropped = %v, want %v", got.Dropped, want)
 	}
+
+	// The background vocal comes in late but ends with the line; the two
+	// undeclared agents are two singers.
+	first := got.Project.Lines[0]
+	if first.Background != "(ooh)" || first.BackgroundTiming.Begin == nil || *first.BackgroundTiming.Begin != 15_100 ||
+		first.BackgroundTiming.End != nil {
+		t.Errorf("line 1 background = %q %+v, want (ooh) with its own start of 15100", first.Background, first.BackgroundTiming)
+	}
+	if len(got.Project.Singers) != 2 || first.Singer != 0 || got.Project.Lines[1].Singer != 1 {
+		t.Errorf("singers = %v, line singers %d and %d; want two singers, one per line",
+			got.Project.Singers, first.Singer, got.Project.Lines[1].Singer)
+	}
+}
+
+func TestReadTTMLAgents(t *testing.T) {
+	const doc = `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata"><head><metadata>` +
+		`<ttm:agent type="group" xml:id="v1000"/>` +
+		`<ttm:agent type="person" xml:id="clean"><ttm:name type="full"> Jon  Mess </ttm:name></ttm:agent>` +
+		`<ttm:agent type="person" xml:id="scream"/>` +
+		`<ttm:agent type="group" xml:id="crowd"/></metadata></head><body><div>` +
+		`<p begin="1s" end="2s" ttm:agent="scream">one</p>` +
+		`<p begin="2s" end="3s" ttm:agent="clean">two</p>` +
+		`<p begin="3s" end="4s" ttm:agent="v1000">three</p>` +
+		`<p begin="4s" end="5s" ttm:agent="guest">four</p>` +
+		`<p begin="5s" end="6s">five</p>` +
+		`<p begin="6s" end="7s" ttm:agent="crowd">six</p></div></body></tt>`
+
+	got, err := ReadTTML(strings.NewReader(doc))
+	if err != nil {
+		t.Fatalf("ReadTTML() error: %v", err)
+	}
+	wantSingers := []core.Singer{{Name: "Jon Mess"}, {}, {}} // clean, scream, then the undeclared guest
+	if !slices.Equal(got.Project.Singers, wantSingers) {
+		t.Errorf("Singers = %v, want %v", got.Project.Singers, wantSingers)
+	}
+	wantLines := []int{1, 0, core.Everyone, 2, 0, core.Everyone}
+	for i, want := range wantLines {
+		if s := got.Project.Lines[i].Singer; s != want {
+			t.Errorf("line %d singer = %d, want %d", i+1, s, want)
+		}
+	}
+	if want := []string{"several groups of singers"}; !slices.Equal(got.Dropped, want) {
+		t.Errorf("Dropped = %v, want %v", got.Dropped, want)
+	}
+
+	// One unnamed agent is the same as none.
+	const single = `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata"><head><metadata>` +
+		`<ttm:agent type="person" xml:id="v1"/></metadata></head><body><div>` +
+		`<p begin="1s" end="2s" ttm:agent="v1">one</p></div></body></tt>`
+	if got, err := ReadTTML(strings.NewReader(single)); err != nil || got.Project.Singers != nil {
+		t.Errorf("ReadTTML(one agent) singers = %v, %v; want none", got.Project.Singers, err)
+	}
+}
+
+func TestReadTTMLSingersRoundTrip(t *testing.T) {
+	bg := line("I can't let this go", 44_900, 47_100)
+	bg.Background = "(let it burn)"
+	late := line("We are the ones", 47_100, 50_300)
+	late.Singer = core.Everyone
+	late.Background = "(who stay)"
+	late.BackgroundTiming = core.Timing{Begin: ms(48_000), End: ms(51_000)}
+	scream := line("BURN IT DOWN", 50_300, 52_000)
+	scream.Singer = 1
+	want := &core.Project{
+		Singers: []core.Singer{{Name: `Clean & "Sweet"`}, {Name: "Scream"}},
+		Lines:   []core.Line{bg, late, scream},
+	}
+
+	var out bytes.Buffer
+	if err := WriteTTML(&out, want, 0); err != nil {
+		t.Fatalf("WriteTTML() error: %v", err)
+	}
+	got, err := ReadTTML(&out)
+	if err != nil {
+		t.Fatalf("ReadTTML() error: %v", err)
+	}
+	if len(got.Dropped) != 0 {
+		t.Errorf("Dropped = %v reading our own export, want nothing", got.Dropped)
+	}
+	if !slices.Equal(got.Project.Singers, want.Singers) {
+		t.Errorf("Singers = %v, want %v", got.Project.Singers, want.Singers)
+	}
+	assertLines(t, got.Project.Lines, want.Lines)
+	for i, w := range want.Lines {
+		g := got.Project.Lines[i]
+		if g.Singer != w.Singer || g.Background != w.Background ||
+			formatTiming(g.BackgroundTiming) != formatTiming(w.BackgroundTiming) {
+			t.Errorf("line %d = singer %d, background %q %s; want singer %d, background %q %s", i+1,
+				g.Singer, g.Background, formatTiming(g.BackgroundTiming),
+				w.Singer, w.Background, formatTiming(w.BackgroundTiming))
+		}
+	}
+}
+
+func formatTiming(t core.Timing) string {
+	format := func(ms *core.Ms) string {
+		if ms == nil {
+			return "line's"
+		}
+
+		return ms.String()
+	}
+
+	return format(t.Begin) + "–" + format(t.End)
 }
 
 func TestReadTTMLUntimedAndErrors(t *testing.T) {

@@ -13,8 +13,9 @@ import (
 )
 
 // timeField shows one line boundary. Tapping it opens a box with the whole
-// time selected. Enter commits; a time that can't be used keeps the box open
-// with the reason shown. Esc or clicking away restores the old time.
+// time selected. Enter commits, and an empty box unsets the time; a time that
+// can't be used keeps the box open with the reason shown. Esc or clicking
+// away restores the old time.
 type timeField struct {
 	widget.BaseWidget
 	label   *widget.Label
@@ -62,6 +63,20 @@ func (*timeField) Cursor() desktop.Cursor { return desktop.TextCursor }
 
 // setTime shows the model's time. An open box keeps what the user is typing.
 func (f *timeField) setTime(ms *core.Ms) {
+	f.setInheritedTime(ms, false)
+}
+
+// setInheritedTime shows a time, greyed out if it is inherited: a background
+// vocal with no time of its own shows its line's.
+func (f *timeField) setInheritedTime(ms *core.Ms, inherited bool) {
+	importance := widget.MediumImportance
+	if inherited {
+		importance = widget.LowImportance
+	}
+	if f.label.Importance != importance {
+		f.label.Importance = importance
+		f.label.Refresh()
+	}
 	f.label.SetText(formatBoundary(ms))
 }
 

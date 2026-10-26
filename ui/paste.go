@@ -15,7 +15,7 @@ const untitledLyrics = "Untitled lyrics"
 // showPasteDialog asks for the lyrics as plain text, to add as untimed lines.
 func (m *mainWindow) showPasteDialog() {
 	box := widget.NewMultiLineEntry()
-	box.SetPlaceHolder("Paste the lyrics here, one line per lyric.\nBlank lines and markers like [Chorus] are skipped.")
+	box.SetPlaceHolder("Paste the lyrics here, one line per lyric.")
 	box.SetMinRowsVisible(14)
 	d := dialog.NewCustomConfirm("Paste lyrics", "Add lines", "Cancel", box, func(add bool) {
 		if add {

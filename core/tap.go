@@ -15,27 +15,39 @@ var (
 	errNoSuchLine = errors.New("no such line")
 )
 
-// NewTap returns the command for a line tap at time at: it ends the open line,
-// if there is one, and starts the next line at the same time. The next line
-// is the first untimed one waiting after the last started line (pasted
-// lyrics); with none waiting, the tap adds a new line at the end. Lines may
-// overlap, but a line never starts before the previous one.
+// NewTap returns the command for a line tap at time at: it starts the line
+// waiting there (see NextLineAt) and ends the timed line before it, if that
+// has no end yet, at the same time. With no line waiting, the tap adds a new
+// line at the end, as long as at is past the last start. Lines may overlap,
+// but a line never starts before the previous one.
 func NewTap(p *Project, at Ms) (Command, error) {
-	open := p.OpenLine()
-	if open >= 0 && at <= *p.Lines[open].Begin { // ending the open line needs a positive length
-		return nil, ErrBeforePrevious
+	next := p.NextLineAt(at)
+	prev := p.startBefore(len(p.Lines))
+	if next >= 0 {
+		prev = p.startBefore(next)
 	}
-	if prev := p.startBefore(len(p.Lines)); prev >= 0 && at < *p.Lines[prev].Begin {
-		return nil, ErrBeforePrevious
+	open := -1
+	if prev >= 0 {
+		begin := *p.Lines[prev].Begin
+		if at < begin {
+			return nil, ErrBeforePrevious
+		}
+		if p.Lines[prev].End == nil {
+			if at == begin { // ending it needs a positive length
+				return nil, ErrBeforePrevious
+			}
+			open = prev
+		}
 	}
 
-	return &tap{at: at, open: open, next: p.NextLine()}, nil
+	return &tap{at: at, open: open, next: next, singer: p.singerAt(len(p.Lines) - 1)}, nil
 }
 
 type tap struct {
-	at   Ms
-	open int // the line this tap ends, or -1
-	next int // the waiting line this tap starts, or -1 to add one
+	at     Ms
+	open   int // the line this tap ends, or -1
+	next   int // the waiting line this tap starts, or -1 to add one
+	singer int // who sings an added line: the last line's singer
 }
 
 func (c *tap) Do(p *Project) {
@@ -45,7 +57,7 @@ func (c *tap) Do(p *Project) {
 	if c.next >= 0 {
 		p.Lines[c.next].Begin = new(c.at)
 	} else {
-		p.Lines = append(p.Lines, Line{Timing: Timing{Begin: new(c.at)}})
+		p.Lines = append(p.Lines, Line{Timing: Timing{Begin: new(c.at)}, Singer: c.singer})
 	}
 }
 
@@ -60,10 +72,11 @@ func (c *tap) Undo(p *Project) {
 	}
 }
 
-// NewEndLine returns the command that ends the open line at time at without
-// starting another, for a gap such as an instrumental break.
+// NewEndLine returns the command that ends the line open at time at (see
+// OpenLineAt) without starting another, for a gap such as an instrumental
+// break.
 func NewEndLine(p *Project, at Ms) (Command, error) {
-	open := p.OpenLine()
+	open := p.OpenLineAt(at)
 	if open < 0 {
 		return nil, ErrNoOpenLine
 	}
@@ -107,12 +120,17 @@ func NewInsertLine(p *Project, i int) (Command, error) {
 
 // NewInsertLines returns the command that inserts lines at index i
 // (len(p.Lines) appends), such as pasted lyrics; one undo removes them all.
+// The inserted lines take the singer of the line before them.
 func NewInsertLines(p *Project, i int, lines []Line) (Command, error) {
 	if i < 0 || i > len(p.Lines) {
 		return nil, fmt.Errorf("%w: %d", errNoSuchLine, i)
 	}
+	lines = slices.Clone(lines)
+	for j := range lines {
+		lines[j].Singer = p.singerAt(i - 1)
+	}
 
-	return &insertLines{index: i, lines: slices.Clone(lines)}, nil
+	return &insertLines{index: i, lines: lines}, nil
 }
 
 type insertLines struct {
@@ -180,7 +198,7 @@ func NewSetTime(p *Project, i int, edge Edge, at, songEnd Ms) (Command, error) {
 			return nil, fmt.Errorf("%w (%s)", ErrEndNotAfterStart, *line.Begin)
 		}
 
-		return &setTime{line: i, edge: End, old: line.End, at: at}, nil
+		return &setTime{line: i, edge: End, old: line.End, at: new(at)}, nil
 	}
 
 	if line.End != nil && at >= *line.End {
@@ -193,14 +211,58 @@ func NewSetTime(p *Project, i int, edge Edge, at, songEnd Ms) (Command, error) {
 		return nil, fmt.Errorf("%w: line %d starts at %s", ErrStartOrder, next+1, *p.Lines[next].Begin)
 	}
 
-	return &setTime{line: i, edge: Begin, old: line.Begin, at: at}, nil
+	return &setTime{line: i, edge: Begin, old: line.Begin, at: new(at)}, nil
+}
+
+// NewClearTime returns the command that unsets one boundary of line i, such
+// as a tap that landed wrong, so that a tap can set it again. A tap that
+// starts a line also ends the timed line before it, so where the two times
+// are the same moment, both are cleared: the next tap there sets both again.
+func NewClearTime(p *Project, i int, edge Edge) (Command, error) {
+	if i < 0 || i >= len(p.Lines) {
+		return nil, fmt.Errorf("%w: %d", errNoSuchLine, i)
+	}
+	c := commands{clearBoundary(p, i, edge)}
+	at := p.Lines[i].Begin
+	other, otherEdge := p.startBefore(i), End
+	if edge == End {
+		at, other, otherEdge = p.Lines[i].End, p.startAfter(i), Begin
+	}
+	if at != nil && other >= 0 {
+		if c2 := clearBoundary(p, other, otherEdge); c2.old != nil && *c2.old == *at {
+			c = append(c, c2)
+		}
+	}
+
+	return &c, nil // a pointer: History tells commands apart by comparing them
+}
+
+func clearBoundary(p *Project, i int, edge Edge) *setTime {
+	c := &setTime{line: i, edge: edge}
+	c.old = *c.boundary(p)
+
+	return c
+}
+
+// commands applies several commands as one, for one undo.
+type commands []Command
+
+func (c commands) Do(p *Project) {
+	for _, cmd := range c {
+		cmd.Do(p)
+	}
+}
+
+func (c commands) Undo(p *Project) {
+	for _, cmd := range slices.Backward(c) {
+		cmd.Undo(p)
+	}
 }
 
 type setTime struct {
-	line int
-	edge Edge
-	old  *Ms // nil for an end that was not set
-	at   Ms
+	line    int
+	edge    Edge
+	old, at *Ms // nil for a boundary that is not set
 }
 
 func (c *setTime) boundary(p *Project) **Ms {
@@ -211,5 +273,54 @@ func (c *setTime) boundary(p *Project) **Ms {
 	return &p.Lines[c.line].Begin
 }
 
-func (c *setTime) Do(p *Project)   { *c.boundary(p) = new(c.at) }
+func (c *setTime) Do(p *Project)   { *c.boundary(p) = c.at }
 func (c *setTime) Undo(p *Project) { *c.boundary(p) = c.old }
+
+// NewClearTimesFrom returns the command that clears the times of line i and
+// every line after it, background vocals' own times too, so that S picks up
+// again at line i: for a tap that went wrong, seek back and tap on from
+// there. The line before keeps its times, except an end set by the tap that
+// started the first cleared line: that end goes too, so the next S ends the
+// line before as well.
+func NewClearTimesFrom(p *Project, i int) (Command, error) {
+	if i < 0 || i >= len(p.Lines) {
+		return nil, fmt.Errorf("%w: %d", errNoSuchLine, i)
+	}
+	c := &clearTimesFrom{index: i, reopen: -1}
+	for _, line := range p.Lines[i:] {
+		c.old = append(c.old, [2]Timing{line.Timing, line.BackgroundTiming})
+	}
+	prev, first := p.startBefore(i), p.startAfter(i-1)
+	if prev >= 0 && first >= 0 {
+		if end := p.Lines[prev].End; end != nil && *end == *p.Lines[first].Begin {
+			c.reopen, c.oldEnd = prev, end
+		}
+	}
+
+	return c, nil
+}
+
+type clearTimesFrom struct {
+	index  int
+	old    [][2]Timing // each cleared line's own and background timing
+	reopen int         // the line before whose end is cleared too, or -1
+	oldEnd *Ms
+}
+
+func (c *clearTimesFrom) Do(p *Project) {
+	for j := c.index; j < len(p.Lines); j++ {
+		p.Lines[j].Timing, p.Lines[j].BackgroundTiming = Timing{}, Timing{}
+	}
+	if c.reopen >= 0 {
+		p.Lines[c.reopen].End = nil
+	}
+}
+
+func (c *clearTimesFrom) Undo(p *Project) {
+	for j, old := range c.old {
+		p.Lines[c.index+j].Timing, p.Lines[c.index+j].BackgroundTiming = old[0], old[1]
+	}
+	if c.reopen >= 0 {
+		p.Lines[c.reopen].End = c.oldEnd
+	}
+}

@@ -52,6 +52,39 @@ func TestWriteTTML(t *testing.T) {
 	}
 }
 
+func TestWriteTTMLSingersAndBackground(t *testing.T) {
+	together := line("All of us", 3000, 4000)
+	together.Singer = core.Everyone
+	together.Background = " (<all> of us) "
+	second := line("Two", 2000, 3000)
+	second.Singer = 1
+	second.Background = "(late)"
+	second.BackgroundTiming.Begin = ms(2500)
+	p := &core.Project{
+		Singers: []core.Singer{{Name: "Lead & co"}, {}},
+		Lines:   []core.Line{line("One", 1000, 2000), second, together},
+	}
+
+	var out bytes.Buffer
+	if err := WriteTTML(&out, p, 0); err != nil {
+		t.Fatalf("WriteTTML() error: %v", err)
+	}
+	for _, want := range []string{
+		`<ttm:agent type="person" xml:id="v1"><ttm:name type="full">Lead &amp; co</ttm:name></ttm:agent>`,
+		`<ttm:agent type="person" xml:id="v2"/>`,
+		`<ttm:agent type="group" xml:id="v1000"/>`,
+		`<p begin="00:00:01.000" end="00:00:02.000" ttm:agent="v1" itunes:key="L1">One</p>`,
+		`<p begin="00:00:02.000" end="00:00:03.000" ttm:agent="v2" itunes:key="L2">` +
+			`Two<span ttm:role="x-bg" begin="00:00:02.500" end="00:00:03.000">(late)</span></p>`,
+		`<p begin="00:00:03.000" end="00:00:04.000" ttm:agent="v1000" itunes:key="L3">` +
+			`All of us<span ttm:role="x-bg" begin="00:00:03.000" end="00:00:04.000">(&lt;all&gt; of us)</span></p>`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %s:\n%s", want, out.String())
+		}
+	}
+}
+
 func TestWriteTTMLReadsBack(t *testing.T) {
 	p := &core.Project{Lines: []core.Line{line("a < b & c", 1000, 2000), line("second", 2000, 3000)}}
 	var out bytes.Buffer
@@ -145,6 +178,45 @@ func TestValidate(t *testing.T) {
 
 	if got := Validate(&core.Project{}, 0); len(got) != 1 || got[0].String() != "There are no lines to export." {
 		t.Errorf("Validate(empty) = %v, want the no-lines problem", got)
+	}
+}
+
+func TestValidateBackground(t *testing.T) {
+	withBG := func(l core.Line, begin, end *core.Ms) core.Line {
+		l.Background = "(bg)"
+		l.BackgroundTiming = core.Timing{Begin: begin, End: end}
+
+		return l
+	}
+	timeless := withBG(core.Line{Text: "untimed"}, nil, ms(3000))
+	p := &core.Project{Lines: []core.Line{
+		withBG(line("the line's times", 1000, 2000), nil, nil),
+		withBG(line("late, past the line", 2000, 3000), ms(2500), ms(4000)),
+		withBG(line("backwards", 3000, 4000), ms(3900), ms(3200)),
+		withBG(line("ends before the line starts", 4000, 5000), nil, ms(3500)),
+		withBG(line("past the song", 5000, 6000), nil, ms(11_000)),
+		timeless,
+	}}
+	want := []string{
+		"Line 3: the background vocal ends at or before its start",
+		"Line 4: the background vocal ends at or before its start",
+		"Line 5: the background vocal ends after the song (0:10.000)",
+		"Line 6: no start or end time",
+		"Line 6: the background vocal has a time but the line has none to go with it",
+	}
+	got := Validate(p, 10_000)
+	if len(got) != len(want) {
+		t.Fatalf("Validate() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i].String() != want[i] {
+			t.Errorf("problem %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+
+	warnings := Warnings(&core.Project{Lines: p.Lines[:2]})
+	if len(warnings) != 1 || warnings[0].Line != 2 || !strings.Contains(warnings[0].Reason, "outside the line") {
+		t.Errorf("Warnings() = %v, want line 2's background vocal running outside it", warnings)
 	}
 }
 

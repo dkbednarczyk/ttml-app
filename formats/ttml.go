@@ -3,6 +3,7 @@ package formats
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"ttml-app/core"
@@ -19,11 +20,13 @@ var (
 	attrEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;")
 )
 
-// WriteTTML writes p as line-timed TTML in the Apple / AMLL profile: one
-// agent, the project's metadata as amll:meta entries, one div, and a p per
-// line with plain text (empty for an instrumental break). songEnd, the length of the audio, becomes the body's
-// dur. A project with problems is not written; the error is an
-// *InvalidError listing them.
+// WriteTTML writes p as line-timed TTML in the Apple / AMLL profile: an
+// agent per singer (v1, v2, …, and v1000 for lines everyone sings), the
+// project's metadata as amll:meta entries, one div, and a p per line with
+// plain text (empty for an instrumental break) and its background vocal as
+// an x-bg span. songEnd, the length of the audio, becomes the body's dur. A
+// project with problems is not written; the error is an *InvalidError
+// listing them.
 func WriteTTML(w io.Writer, p *core.Project, songEnd core.Ms) error {
 	if problems := Validate(p, songEnd); len(problems) > 0 {
 		return &InvalidError{Problems: problems}
@@ -37,7 +40,8 @@ func WriteTTML(w io.Writer, p *core.Project, songEnd core.Ms) error {
 		b.WriteString(` xmlns:amll="` + amllNS + `"`)
 	}
 	b.WriteString(` itunes:timing="Line" xml:lang="` + ttmlLang + `">` + "\n")
-	b.WriteString("  <head>\n    <metadata>\n      <ttm:agent type=\"person\" xml:id=\"v1\"/>\n")
+	b.WriteString("  <head>\n    <metadata>\n")
+	writeAgents(&b, p)
 	for _, e := range p.Meta {
 		fmt.Fprintf(&b, "      <amll:meta key=\"%s\" value=\"%s\"/>\n", attrEscaper.Replace(e.Key), attrEscaper.Replace(e.Value))
 	}
@@ -57,9 +61,14 @@ func WriteTTML(w io.Writer, p *core.Project, songEnd core.Ms) error {
 	}
 	fmt.Fprintf(&b, "    <div begin=%q end=%q>\n", clockTime(*lines[0].Begin), clockTime(divEnd))
 	for i, line := range lines {
-		fmt.Fprintf(&b, "      <p begin=%q end=%q ttm:agent=\"v1\" itunes:key=\"L%d\">",
-			clockTime(*line.Begin), clockTime(*line.End), i+1)
+		fmt.Fprintf(&b, "      <p begin=%q end=%q ttm:agent=%q itunes:key=\"L%d\">",
+			clockTime(*line.Begin), clockTime(*line.End), agentID(line.Singer), i+1)
 		b.WriteString(textEscaper.Replace(strings.TrimSpace(line.Text)))
+		if bg := strings.TrimSpace(line.Background); bg != "" {
+			t := line.BackgroundTimes()
+			fmt.Fprintf(&b, "<span ttm:role=\"x-bg\" begin=%q end=%q>%s</span>",
+				clockTime(*t.Begin), clockTime(*t.End), textEscaper.Replace(bg))
+		}
 		b.WriteString("</p>\n")
 	}
 	b.WriteString("    </div>\n  </body>\n</tt>\n")
@@ -69,6 +78,34 @@ func WriteTTML(w io.Writer, p *core.Project, songEnd core.Ms) error {
 	}
 
 	return nil
+}
+
+// groupAgent is the agent ID of lines everyone sings, as in Apple's files.
+const groupAgent = "v1000"
+
+// writeAgents declares a person agent per singer, named where the singer has
+// a name, and the group agent if a line uses it.
+func writeAgents(b *strings.Builder, p *core.Project) {
+	for i := range max(len(p.Singers), 1) {
+		if i < len(p.Singers) && p.Singers[i].Name != "" {
+			fmt.Fprintf(b, "      <ttm:agent type=\"person\" xml:id=%q><ttm:name type=\"full\">%s</ttm:name></ttm:agent>\n",
+				agentID(i), textEscaper.Replace(p.Singers[i].Name))
+		} else {
+			fmt.Fprintf(b, "      <ttm:agent type=\"person\" xml:id=%q/>\n", agentID(i))
+		}
+	}
+	if slices.ContainsFunc(p.Lines, func(l core.Line) bool { return l.Singer == core.Everyone }) {
+		b.WriteString("      <ttm:agent type=\"group\" xml:id=\"" + groupAgent + "\"/>\n")
+	}
+}
+
+// agentID returns the agent of a singer index, or of everyone.
+func agentID(singer int) string {
+	if singer == core.Everyone {
+		return groupAgent
+	}
+
+	return fmt.Sprintf("v%d", singer+1)
 }
 
 // clockTime writes a time as TTML clock time, hh:mm:ss.mmm. Strict TTML

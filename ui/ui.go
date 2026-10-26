@@ -86,8 +86,10 @@ func newMainWindow(w fyne.Window) *mainWindow {
 	headerPaste := widget.NewButton("Paste lyrics", nil)
 	emptyPaste := widget.NewButton("Paste lyrics", nil)
 	saveButton := widget.NewButtonWithIcon("Save", theme.DocumentSaveIcon(), nil)
+	// Lines have one singer until a second is added; then each row can pick.
+	addSinger := widget.NewButtonWithIcon("Add singer", theme.ContentAddIcon(), nil)
 
-	buttons := container.NewVBox(container.NewHBox(saveButton, headerLoad, headerImport, headerPaste))
+	buttons := container.NewVBox(container.NewHBox(saveButton, headerLoad, headerImport, headerPaste, addSinger))
 	header := container.NewVBox(
 		container.NewPadded(container.NewBorder(nil, nil, nil, buttons, trackInfo.Container)),
 		widget.NewSeparator(),
@@ -143,7 +145,7 @@ func newMainWindow(w fyne.Window) *mainWindow {
 	m.tapButton.OnTapped = m.tap
 	m.endButton.OnTapped = m.endLine
 	saveButton.OnTapped = m.save
-	m.updateButtons()
+	m.updateMarks()
 	w.Canvas().SetOnTypedKey(m.typedKey)
 	m.addShortcuts()
 	headerLoad.OnTapped = m.chooseAudio
@@ -151,6 +153,7 @@ func newMainWindow(w fyne.Window) *mainWindow {
 	headerImport.OnTapped = m.chooseTTML
 	emptyImport.OnTapped = m.chooseTTML
 	headerPaste.OnTapped = m.showPasteDialog
+	addSinger.OnTapped = func() { m.showAddSinger(-1) }
 	emptyPaste.OnTapped = m.showPasteDialog
 	slider.OnChanged = m.sliderChanged
 	// A clicked slider keeps focus and would swallow Space, S and E.

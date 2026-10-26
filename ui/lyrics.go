@@ -7,6 +7,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"ttml-app/core"
@@ -58,11 +59,16 @@ func (m *mainWindow) addShortcuts() {
 	}
 }
 
-// tap ends the open line, if any, and starts the next one at the playback
-// position: the next pasted line waiting for a time, or a new line.
+// tap starts the line waiting at the playback position, ending the line
+// before it if that is still open: the next pasted line, a line cleared for
+// a re-tap, or with none waiting a new line at the end.
 func (m *mainWindow) tap() {
-	next := m.history.Project().NextLine()
-	if !m.mark(core.NewTap) {
+	at, ok := m.markTime()
+	if !ok {
+		return
+	}
+	next := m.history.Project().NextLineAt(at)
+	if !m.mark(core.NewTap, at) {
 		return
 	}
 	if next < 0 {
@@ -73,21 +79,34 @@ func (m *mainWindow) tap() {
 
 // endLine ends the open line without starting another, for a break in the vocals.
 func (m *mainWindow) endLine() {
-	m.mark(core.NewEndLine)
+	if at, ok := m.markTime(); ok {
+		m.mark(core.NewEndLine, at)
+	}
 }
 
-// mark applies a tap-style command at the playback position and reports
-// whether it did anything.
-func (m *mainWindow) mark(newCommand func(*core.Project, core.Ms) (core.Command, error)) bool {
-	// Marks only count while the song plays; while paused they would land
-	// wherever the playhead happens to sit, such as 0:00 right after loading.
-	if !m.playing {
-		return false
+// markTime returns the playback position for a mark, or false while paused:
+// marks only count while the song plays; while paused they would land
+// wherever the playhead happens to sit, such as 0:00 right after loading.
+func (m *mainWindow) markTime() (core.Ms, bool) {
+	return m.playhead(), m.playing
+}
+
+// playhead is the playback position: the player's own when there is one,
+// which runs ahead of the last clock tick while playing.
+func (m *mainWindow) playhead() core.Ms {
+	if m.player != nil {
+		return core.Ms(m.player.Position().Milliseconds())
 	}
-	c, err := newCommand(m.history.Project(), core.Ms(m.player.Position().Milliseconds()))
+
+	return core.Ms(m.position.Milliseconds())
+}
+
+// mark applies a tap-style command at time at and reports whether it did anything.
+func (m *mainWindow) mark(newCommand func(*core.Project, core.Ms) (core.Command, error), at core.Ms) bool {
+	c, err := newCommand(m.history.Project(), at)
 	if err != nil {
-		// Nothing to mark: no open line to end, or a tap before the last
-		// boundary after seeking back.
+		// Nothing to mark here: no open line to end, or no line waiting
+		// for a tap after seeking back.
 		return false
 	}
 	m.apply(c)
@@ -128,6 +147,18 @@ func (m *mainWindow) setLineText(i int, text string) {
 	c, err := core.NewSetText(m.history.Project(), i, text)
 	if err != nil {
 		fyne.LogError("set lyric text", err)
+
+		return
+	}
+	m.apply(c)
+}
+
+// clearTimesFrom clears the times of line i and every line after it, so the
+// next S starts line i again: for re-tapping from a tap that went wrong.
+func (m *mainWindow) clearTimesFrom(i int) {
+	c, err := core.NewClearTimesFrom(m.history.Project(), i)
+	if err != nil {
+		fyne.LogError("clear times", err)
 
 		return
 	}
@@ -195,25 +226,48 @@ func (m *mainWindow) refreshLyrics() {
 		rows = append(rows, m.newLyricRow(i))
 	}
 	rows = rows[:len(lines)]
-	next := m.history.Project().NextLine()
+	p := m.history.Project()
+	focused := m.window.Canvas().Focused()
+	var singers float32 // the singer buttons' width; 0 hides them
+	if p.HasSingers() {
+		singers = singerWidth(p)
+	}
+	timedFrom := false // line i or a line after it has a time to clear
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := lines[i]
+		timedFrom = timedFrom || line.Timing != (core.Timing{}) || line.BackgroundTiming != (core.Timing{})
+		r := rows[i].(*lyricRow)
+		setEnabled(r.clearFrom, timedFrom)
+	}
 	for i, line := range lines {
-		rows[i].(*lyricRow).show(i, line)
-		rows[i].(*lyricRow).number.setNext(i == next)
+		r := rows[i].(*lyricRow)
+		r.show(i, line, focused == r.bgText)
+		r.showSinger(p.SingerName(line.Singer), singers)
 	}
 	m.lyricRows.Objects = rows
 	m.lyricRows.Refresh()
-	m.updateButtons()
+	m.updateMarks()
 	m.updatePreview(true)
 	m.updateStatus()
 }
 
-// updateButtons sets the mark and save buttons for the playback and project state.
-func (m *mainWindow) updateButtons() {
-	open := m.history.Project().OpenLine() >= 0
+// updateMarks marks the line the next S starts and sets the mark and save
+// buttons. The marks follow the playback position, which decides what a tap
+// starts and ends: back in a cleared line's place, that line is next.
+func (m *mainWindow) updateMarks() {
+	p := m.history.Project()
+	at := m.playhead()
+	next := p.NextLineAt(at)
+	for i, row := range m.lyricRows.Objects {
+		row.(*lyricRow).number.setNext(i == next)
+	}
+	open := p.OpenLineAt(at) >= 0
+	label := startLineLabel
 	if open {
-		m.tapButton.SetText(nextLineLabel)
-	} else {
-		m.tapButton.SetText(startLineLabel)
+		label = nextLineLabel
+	}
+	if m.tapButton.Text != label {
+		m.tapButton.SetText(label)
 	}
 	setEnabled(m.tapButton, m.playing)
 	setEnabled(m.endButton, m.playing && open)
@@ -236,15 +290,32 @@ func (m *mainWindow) newLyricRow(i int) *lyricRow {
 	// Enter leaves the box, so Space, S and E work again.
 	text.OnSubmitted = func(string) { m.window.Canvas().Unfocus() }
 
+	bgText := &lyricEntry{
+		save:      m.save,
+		seek:      func() bool { return m.seekToBackground(i) },
+		focusLost: func() { m.closeEmptyBackground(i) },
+	}
+	bgText.ExtendBaseWidget(bgText)
+	bgText.SetPlaceHolder("Background vocal")
+	bgText.OnChanged = func(s string) { m.setBackground(i, s) }
+	bgText.OnSubmitted = func(string) { m.window.Canvas().Unfocus() }
+
 	r := &lyricRow{
 		text:   text,
+		bgText: bgText,
 		reason: widget.NewLabel(""),
 	}
 	r.number = newLineNumber()
 	r.box = newLyricBox(text, func() { m.deleteLine(i) })
+	r.bgBox = newLyricBox(bgText, func() { m.deleteBackground(i) })
+	r.singer = newSingerButton(func() { m.showSingerMenu(i, r.singer) })
+	r.singer.Hide()
+	r.clearFrom = newInsertButton(theme.HistoryIcon(), func() { m.clearTimesFrom(i) })
 	r.inserts = container.NewHBox(
 		newInsertButton(insertAboveIcon, func() { m.insertLine(i) }),
 		newInsertButton(insertBelowIcon, func() { m.insertLine(i + 1) }),
+		newInsertButton(backgroundIcon, func() { m.openBackground(i) }),
+		r.clearFrom,
 	)
 	r.reason.Importance = widget.DangerImportance
 	r.reason.Hide()
@@ -254,13 +325,27 @@ func (m *mainWindow) newLyricRow(i int) *lyricRow {
 	}
 	r.begin = newTimeField(func(s string) error { return m.setTime(i, core.Begin, s) }, showError)
 	r.end = newTimeField(func(s string) error { return m.setTime(i, core.End, s) }, showError)
+	r.bgBegin = newTimeField(func(s string) error { return m.setBackgroundTime(i, core.Begin, s) }, showError)
+	r.bgEnd = newTimeField(func(s string) error { return m.setBackgroundTime(i, core.End, s) }, showError)
+	// The background vocal's row lines up under the line's: its times under
+	// the line's times, its box under the line's box.
+	bgLeft := container.NewCenter(container.NewHBox(
+		newSpacer(r.number), r.bgBegin, widget.NewLabel("–"), r.bgEnd, newSpacer(r.singer)))
+	r.bgRow = container.NewBorder(nil, nil, bgLeft, newSpacer(r.inserts), r.bgBox)
+	r.bgRow.Hide()
 	r.ExtendBaseWidget(r)
 
 	return r
 }
 
 // setTime sets one boundary of line i from typed text, or says why it can't.
+// An empty box unsets the boundary.
 func (m *mainWindow) setTime(i int, edge core.Edge, text string) error {
+	if text == "" {
+		m.clearTime(i, edge)
+
+		return nil
+	}
 	at, err := core.ParseMs(text)
 	if err != nil {
 		return err
@@ -274,13 +359,36 @@ func (m *mainWindow) setTime(i int, edge core.Edge, text string) error {
 	return nil
 }
 
+// clearTime unsets one boundary of line i, if it is set.
+func (m *mainWindow) clearTime(i int, edge core.Edge) {
+	line := m.history.Project().Lines[i]
+	if edge == core.Begin && line.Begin == nil || edge == core.End && line.End == nil {
+		return // nothing to undo
+	}
+	c, err := core.NewClearTime(m.history.Project(), i, edge)
+	if err != nil {
+		fyne.LogError("clear time", err)
+
+		return
+	}
+	m.apply(c)
+}
+
 // lyricEntry is a text box that passes Save on to the window (a focused
 // Entry otherwise receives every shortcut, and would swallow Ctrl+S), and
 // seeks to its line on a double-click.
 type lyricEntry struct {
 	widget.Entry
-	save func()
-	seek func() bool // seeks to the line's start; false if it can't
+	save      func()
+	seek      func() bool // seeks to the line's start; false if it can't
+	focusLost func()      // runs when the cursor leaves the box; may be nil
+}
+
+func (e *lyricEntry) FocusLost() {
+	e.Entry.FocusLost()
+	if e.focusLost != nil {
+		e.focusLost()
+	}
 }
 
 // DoubleTapped skips the song to the line. With no time or no audio to seek
@@ -301,23 +409,32 @@ func (e *lyricEntry) TypedShortcut(s fyne.Shortcut) {
 	e.Entry.TypedShortcut(s)
 }
 
-// lyricRow shows one line's number, boundaries and text box, with the reason
-// a typed time was refused underneath while there is one.
+// lyricRow shows one line's number, boundaries, singer (once there are
+// several) and text box; under them its background vocal, if it has one or
+// one is being typed; and under that the reason a typed time was refused
+// while there is one.
 type lyricRow struct {
 	widget.BaseWidget
-	number     *lineNumber
-	begin, end *timeField
-	text       *lyricEntry
-	box        *lyricBox       // the text box, with its delete icon
-	inserts    *fyne.Container // insert above / below
-	reason     *widget.Label
+	number         *lineNumber
+	begin, end     *timeField
+	singer         *singerButton
+	text           *lyricEntry
+	box            *lyricBox       // the text box, with its delete icon
+	inserts        *fyne.Container // insert above / below, add a background vocal, clear times from here
+	clearFrom      *widget.Button  // clears the times from this line on; disabled with none
+	bgBegin, bgEnd *timeField
+	bgText         *lyricEntry
+	bgBox          *lyricBox
+	bgRow          *fyne.Container
+	bgOpen         bool // the background vocal box shows, even while empty
+	reason         *widget.Label
 }
 
 func (r *lyricRow) CreateRenderer() fyne.WidgetRenderer {
 	// Centred, so the number and times line up with the text in the taller box.
-	left := container.NewCenter(container.NewHBox(r.number, r.begin, widget.NewLabel("–"), r.end))
+	left := container.NewCenter(container.NewHBox(r.number, r.begin, widget.NewLabel("–"), r.end, r.singer))
 
-	return widget.NewSimpleRenderer(container.NewVBox(container.NewBorder(nil, nil, left, r.inserts, r.box), r.reason))
+	return widget.NewSimpleRenderer(container.NewVBox(container.NewBorder(nil, nil, left, r.inserts, r.box), r.bgRow, r.reason))
 }
 
 func (r *lyricRow) setReason(err error) {
@@ -330,13 +447,43 @@ func (r *lyricRow) setReason(err error) {
 	r.reason.Show()
 }
 
-func (r *lyricRow) show(i int, line core.Line) {
+// show brings the row in line with line i. typingBG says the cursor is in
+// the background vocal box, which then stays open even if emptied.
+func (r *lyricRow) show(i int, line core.Line, typingBG bool) {
 	r.number.setNumber(i + 1)
 	r.begin.setTime(line.Begin)
 	r.end.setTime(line.End)
 	if r.text.Text != line.Text {
 		r.text.SetText(line.Text)
 	}
+
+	// Rows are positional, so an open box left over from a deleted line closes.
+	r.bgOpen = line.Background != "" || r.bgOpen && typingBG
+	if r.bgOpen {
+		r.bgRow.Show()
+	} else {
+		r.bgRow.Hide()
+	}
+	bg := line.BackgroundTimes()
+	r.bgBegin.setInheritedTime(bg.Begin, line.BackgroundTiming.Begin == nil)
+	r.bgEnd.setInheritedTime(bg.End, line.BackgroundTiming.End == nil)
+	if r.bgText.Text != line.Background {
+		r.bgText.SetText(line.Background)
+	}
+}
+
+// showSinger sets the singer button to name at width, or hides it for width 0.
+func (r *lyricRow) showSinger(name string, width float32) {
+	if width == 0 {
+		r.singer.Hide()
+
+		return
+	}
+	if r.singer.Text != name || r.singer.width != width {
+		r.singer.width = width
+		r.singer.SetText(name)
+	}
+	r.singer.Show()
 }
 
 // lineNumber shows a line's number.

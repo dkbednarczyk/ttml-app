@@ -34,3 +34,23 @@ func TestParseText(t *testing.T) {
 		t.Errorf("ParseText(blank and markers) = %+v, want no lines", got)
 	}
 }
+
+func TestParseTextBackgroundVocals(t *testing.T) {
+	tests := []struct{ line, text, background string }{
+		{"I can't let this go (let it burn)", "I can't let this go", "(let it burn)"},
+		{"We are the ones (oh) (oh)", "We are the ones", "(oh) (oh)"},
+		{"(Hey! Hey!)", "", "(Hey! Hey!)"},
+		{"Say it (say it (louder))", "Say it", "(say it (louder))"},
+		{"I (don't) care", "I (don't) care", ""},
+		{"Stuck in a loop (x2)", "Stuck in a loop (x2)", ""},
+		{"Again (oh) (×4)", "Again (oh) (×4)", ""},
+		{"Unbalanced)", "Unbalanced)", ""},
+		{"Never again(again)", "Never again", "(again)"},
+	}
+	for _, tt := range tests {
+		got := ParseText(tt.line)
+		if len(got) != 1 || got[0].Text != tt.text || got[0].Background != tt.background {
+			t.Errorf("ParseText(%q) = %+v, want text %q and background %q", tt.line, got, tt.text, tt.background)
+		}
+	}
+}

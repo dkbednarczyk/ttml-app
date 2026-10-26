@@ -525,8 +525,80 @@ func TestEditOpenEndClosesLine(t *testing.T) {
 	}
 	field.entry.SetText("0:04.000")
 	field.entry.TypedKey(&fyne.KeyEvent{Name: fyne.KeyReturn})
-	if mw.history.Project().OpenLine() != -1 || mw.tapButton.Text != startLineLabel {
+	if mw.history.Project().OpenLineAt(mw.playhead()) != -1 || mw.tapButton.Text != startLineLabel {
 		t.Fatal("setting the open line's end did not close it")
+	}
+}
+
+func TestEmptyTimeBoxClearsIt(t *testing.T) {
+	mw := newMarkedTestWindow(t)
+	field := mw.lyricRows.Objects[1].(*lyricRow).end
+
+	test.Tap(field)
+	field.entry.SetText("")
+	field.entry.TypedKey(&fyne.KeyEvent{Name: fyne.KeyReturn})
+	if field.editing {
+		t.Fatal("box is still open after emptying it")
+	}
+	// Line 2 was the last line, so it is open again for the next tap.
+	checkRows(t, mw, []string{"  1 0:01.000 – 0:02.000", "  2 0:02.000 – -:--.---"})
+	if mw.history.Project().OpenLineAt(mw.playhead()) != 1 || mw.tapButton.Text != nextLineLabel {
+		t.Fatal("clearing the last line's end did not open it again")
+	}
+
+	// Emptying a time that is already unset changes nothing.
+	mw.history.MarkSaved()
+	test.Tap(field)
+	field.entry.TypedKey(&fyne.KeyEvent{Name: fyne.KeyReturn})
+	if mw.history.Dirty() {
+		t.Fatal("emptying an unset time changed the project")
+	}
+
+	typeShortcut(t, mw, &fyne.ShortcutUndo{})
+	checkRows(t, mw, []string{"  1 0:01.000 – 0:02.000", "  2 0:02.000 – 0:03.000"})
+}
+
+func TestRetapClearedStart(t *testing.T) {
+	mw := newMarkedTestWindow(t)
+	rows := mw.lyricRows.Objects
+	field := rows[1].(*lyricRow).begin
+
+	// Line 1's end was the same tap as line 2's start, so it goes too.
+	test.Tap(field)
+	field.entry.SetText("")
+	field.entry.TypedKey(&fyne.KeyEvent{Name: fyne.KeyReturn})
+	checkRows(t, mw, []string{"  1 0:01.000 – -:--.---", "  2 -:--.--- – 0:03.000"})
+
+	// Back in line 2's place, it is next, and S ends line 1 and starts it.
+	fake := fakeFor(t, mw)
+	fake.setPosition(1500 * time.Millisecond)
+	mw.syncPosition()
+	if got := rows[1].(*lyricRow).number.label.Importance; got != widget.HighImportance || mw.tapButton.Text != nextLineLabel {
+		t.Fatalf("at 0:01.500: line 2 number importance %v, S button %q; want line 2 marked next and %q",
+			got, mw.tapButton.Text, nextLineLabel)
+	}
+	fake.setPosition(1800 * time.Millisecond)
+	pressKey(mw, fyne.KeyS)
+	checkRows(t, mw, []string{"  1 0:01.000 – 0:01.800", "  2 0:01.800 – 0:03.000"})
+}
+
+func TestClearTimesFromRetaps(t *testing.T) {
+	mw := newMarkedTestWindow(t)
+	rows := mw.lyricRows.Objects
+	clear := rows[1].(*lyricRow).clearFrom
+
+	test.Tap(clear)
+	// Line 1 ended with the tap that started line 2, so it opens again.
+	checkRows(t, mw, []string{"  1 0:01.000 – -:--.---", "  2 -:--.--- – -:--.---"})
+	if !clear.Disabled() || rows[0].(*lyricRow).clearFrom.Disabled() {
+		t.Fatal("after clearing line 2: its clear button should be off, line 1's on")
+	}
+
+	fakeFor(t, mw).setPosition(2500 * time.Millisecond)
+	pressKey(mw, fyne.KeyS)
+	checkRows(t, mw, []string{"  1 0:01.000 – 0:02.500", "  2 0:02.500 – -:--.---"})
+	if clear.Disabled() {
+		t.Fatal("line 2's clear button is still off after tapping it again")
 	}
 }
 
