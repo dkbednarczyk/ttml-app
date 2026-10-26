@@ -26,13 +26,6 @@ doctor:
     fi
     exit $missing
 
-# Install Fyne's C build dependencies on Fedora/Nobara (uses sudo)
-[linux]
-deps-fedora:
-    sudo dnf install -y \
-        alsa-lib-devel gcc pkgconf-pkg-config mesa-libGL-devel mesa-libEGL-devel \
-        wayland-devel wayland-protocols-devel libxkbcommon-devel
-
 # Download Go modules and build the pinned dev tools
 setup:
     go mod download
