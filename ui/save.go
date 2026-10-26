@@ -1,9 +1,10 @@
 package ui
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
-	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -89,9 +90,11 @@ func (m *mainWindow) askSavePath() {
 func (m *mainWindow) saveTo(path string) {
 	export := *m.history.Project()
 	export.Meta = core.FillMeta(export.Meta, m.audioMeta())
-	err := formats.WriteFileAtomic(path, func(w io.Writer) error {
-		return formats.WriteTTML(w, &export, m.songEnd())
-	})
+	var buf bytes.Buffer
+	err := formats.WriteTTML(&buf, &export, m.songEnd())
+	if err == nil {
+		err = os.WriteFile(path, buf.Bytes(), 0o644)
+	}
 	if err != nil {
 		var invalid *formats.InvalidError
 		if errors.As(err, &invalid) {

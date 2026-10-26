@@ -38,7 +38,7 @@ When unsure of a Fyne (or any) API, read its source in the module cache
 ```
 cmd/app/   GUI entry point
 core/      the Project (lines, timing, metadata) and the commands that edit it; undo
-formats/   TTML read/write, plain-text lyrics, validator and warnings, atomic file writes
+formats/   TTML read/write, plain-text lyrics, validator and warnings
 audio/     playback, speed, track tags, cover art
 ui/        Fyne screens
 example/   local sample songs (git-ignored; tests that need them skip)
